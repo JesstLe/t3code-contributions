@@ -1047,6 +1047,50 @@ it.layer(
       }),
   );
 
+  it.effect("prefers bounded history over a stale encoded copy", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, logsDir } = yield* createManager();
+      const fs = yield* FileSystem.FileSystem;
+      const threadId = "p".repeat(100);
+      yield* manager.open(openInput({ threadId }));
+      ptyAdapter.processes[0]!.emitData("current\n");
+      yield* manager.close({ threadId });
+      const oldPath = yield* historyLogPath(logsDir, threadId);
+      yield* fs.writeFileString(oldPath, "stale\n");
+
+      expect((yield* manager.open(openInput({ threadId }))).history).toBe("current\n");
+      yield* manager.close({ threadId, terminalId: DEFAULT_TERMINAL_ID, deleteHistory: true });
+      expect(yield* fs.readDirectory(logsDir)).toEqual([]);
+    }),
+  );
+
+  it.effect("retains encoded history if migration cannot write the bounded file", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const limited = FileSystem.FileSystem.of({
+        ...fs,
+        writeFileString: () =>
+          Effect.fail(
+            PlatformError.systemError({
+              _tag: "PermissionDenied",
+              module: "FileSystem",
+              method: "writeFileString",
+            }),
+          ),
+      });
+      const { manager, logsDir } = yield* createManager().pipe(
+        Effect.provideService(FileSystem.FileSystem, limited),
+      );
+      const threadId = "f".repeat(100);
+      const oldPath = yield* historyLogPath(logsDir, threadId);
+      yield* fs.writeFileString(oldPath, "preserve me\n");
+
+      expect(Exit.isFailure(yield* Effect.exit(manager.open(openInput({ threadId }))))).toBe(true);
+      expect(yield* fs.readFileString(oldPath)).toBe("preserve me\n");
+      expect(yield* fs.readDirectory(logsDir)).toHaveLength(1);
+    }),
+  );
+
   it.effect("migrates legacy transcript filenames to terminal-scoped history path on open", () =>
     Effect.gen(function* () {
       const { manager, logsDir } = yield* createManager();
