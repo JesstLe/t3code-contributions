@@ -1895,7 +1895,17 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       const history = new BoundedTerminalHistory(historyLineLimit, raw, historyByteLimit);
       const capped = history.value();
       if (migrating || truncated || capped !== raw) {
-        yield* fileSystem.writeFileString(nextPath, capped).pipe(
+        const write = migrating
+          ? Effect.gen(function* () {
+              const temporaryPath = yield* fileSystem.makeTempFileScoped({
+                directory: logsDir,
+                prefix: ".history-",
+              });
+              yield* fileSystem.writeFileString(temporaryPath, capped);
+              yield* fileSystem.rename(temporaryPath, nextPath);
+            }).pipe(Effect.scoped)
+          : fileSystem.writeFileString(nextPath, capped);
+        yield* write.pipe(
           Effect.mapError(
             (cause) =>
               new TerminalHistoryError({

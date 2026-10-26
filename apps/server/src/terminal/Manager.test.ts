@@ -1067,16 +1067,25 @@ it.layer(
   it.effect("retains encoded history if migration cannot write the bounded file", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
+      let failNextWrite = true;
       const limited = FileSystem.FileSystem.of({
         ...fs,
-        writeFileString: () =>
-          Effect.fail(
-            PlatformError.systemError({
-              _tag: "PermissionDenied",
-              module: "FileSystem",
-              method: "writeFileString",
-            }),
-          ),
+        writeFileString: (filePath, data, options) => {
+          if (!failNextWrite) return fs.writeFileString(filePath, data, options);
+          failNextWrite = false;
+          return fs.writeFileString(filePath, "partial").pipe(
+            Effect.andThen(
+              Effect.fail(
+                PlatformError.systemError({
+                  _tag: "Unknown",
+                  module: "FileSystem",
+                  method: "writeFileString",
+                  cause: { code: "ENOSPC" },
+                }),
+              ),
+            ),
+          );
+        },
       });
       const { manager, logsDir } = yield* createManager().pipe(
         Effect.provideService(FileSystem.FileSystem, limited),
@@ -1088,6 +1097,7 @@ it.layer(
       expect(Exit.isFailure(yield* Effect.exit(manager.open(openInput({ threadId }))))).toBe(true);
       expect(yield* fs.readFileString(oldPath)).toBe("preserve me\n");
       expect(yield* fs.readDirectory(logsDir)).toHaveLength(1);
+      expect((yield* manager.open(openInput({ threadId }))).history).toBe("preserve me\n");
     }),
   );
 
